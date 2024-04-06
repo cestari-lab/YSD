@@ -1,0 +1,537 @@
+#minimap for sequence alignment 
+#.fasta to .sam file
+
+module load minimap2
+module load samtools
+
+minimap2 -ax map-ont -k11 -m30 -w7 -I4G -t16 -2 /path/to/directory/genome.fasta \
+/path/to/input/*.fastq.gz >/path/to/output/file.sam
+
+#minimap commands:
+#-a: generate CIGAR and output alignments in SAM format
+#-x map-ont: align long reads of ~10% error to a reference genome
+#-k11: minimizer k-mer length of 11
+#-m30: discard chains with chaining score <30
+#-w7: minimizer window size
+#-I4G: Load at most 4G target bases into RAM for indexing
+#-t16: 16 threads
+#-2: Use two I/O threads during mapping
+
+#samtools for filtering and to convert .sam to .bam
+
+samtools view -bSq 1 -F 0x100 -F 0x800 file.sam > file.bam
+samtools sort file.bam > file_index.bam
+samtools index file_index.bam 
+samtools flagstat file_index.bam > file_index_flag.txt
+samtools stat file_index.bam > file_index_stat.txt
+
+#samtools commands:
+#view: prints alignments in the specified input alignment
+	#-b: BAM output
+	#-S: input is a SAM file
+	#-q: ignores alignments with a MAPQ>1
+	#-F 0x100: ignores secondary alignments
+	#-F 0x800: ignores supplementary alignments
+#sort:sorts alignments in BAM file by leftmost coordinates
+#index: indexes a BAM file for fast random access
+#flagstat: prints statistics for each flag
+#stat: prints comprehensive statistics from the BAM file
+
+#analyzing immunogenic regions:
+#macs3 to callpeaks
+#Note: run macs3 commands in the home directory where you can see the macs3 virtualenv folder
+
+module load python/3.8.2 
+source ~/ENV/bin/activate 
+virtualenv macs3 
+source macs3/bin/activate  
+module load bedtools 
+
+macs3 callpeak -t /path/to/treatment/treatment_index.bam -c /path/to/control/control_index.bam -f BAM -g 44000000 -n macs3-name --outdir /path/to/output/macs3-name/
+
+#macs3 commands
+#-t: treatment sorted BAM file
+#-c: control sorted BAM file
+#-f: output file format
+#-g: genome size 
+#--outdir: path to the output folder
+
+#determine intersecting regions between biological replicates - python script
+#input files are the .txt 
+
+#find region that falls within all the datasets: 
+import csv
+
+def find_overlapping_peaks(macs3_file1, macs3_file2, macs3_file3):
+    peaks1 = read_macs3_peaks(macs3_file1)
+    peaks2 = read_macs3_peaks(macs3_file2)
+    peaks3 = read_macs3_peaks(macs3_file3)
+    
+    overlapping_peaks = []
+    
+    for peak1 in peaks1:
+        for peak2 in peaks2:
+            for peak3 in peaks3:
+                if peak1['chromosome'] == peak2['chromosome'] == peak3['chromosome']:
+                    if peak1['end'] >= peak2['start'] and peak1['start'] <= peak2['end'] and \
+                       peak1['end'] >= peak3['start'] and peak1['start'] <= peak3['end']:
+                        region_start = max(peak1['start'], peak2['start'], peak3['start'])
+                        region_end = min(peak1['end'], peak2['end'], peak3['end'])
+                        if region_start <= region_end:
+                            overlapping_peak = {
+                                'chromosome': peak1['chromosome'],
+                                'start': region_start,
+                                'end': region_end,
+                                'length1': peak1['length'],
+                                'length2': peak2['length'],
+                                'length3': peak3['length'],
+                                'pileup1': peak1['pileup'],
+                                'pileup2': peak2['pileup'],
+                                'pileup3': peak3['pileup'],
+                                'log10(pvalue)1': peak1['log10(pvalue)'],
+                                'log10(pvalue)2': peak2['log10(pvalue)'],
+                                'log10(pvalue)3': peak3['log10(pvalue)'],
+                                'fold_enrichment1': peak1['fold_enrichment'],
+                                'fold_enrichment2': peak2['fold_enrichment'],
+                                'fold_enrichment3': peak3['fold_enrichment'],
+                                'log10(qvalue)1': peak1['log10(qvalue)'],
+                                'log10(qvalue)2': peak2['log10(qvalue)'],
+                                'log10(qvalue)3': peak3['log10(qvalue)'],
+                                'name1': peak1['name'],
+                                'name2': peak2['name'],
+                                'name3': peak3['name']
+                            }
+                            overlapping_peaks.append(overlapping_peak)
+    
+    return overlapping_peaks
+
+def read_macs3_peaks(macs3_file):
+    peaks = []
+    
+    with open(macs3_file, 'r') as file:
+        reader = csv.DictReader(file, delimiter='\t')
+        for row in reader:
+            peaks.append({
+                'chromosome': row['chr'],
+                'start': int(row['start']),
+                'end': int(row['end']),
+                'length': int(row['length']),
+                'pileup': float(row['pileup']),
+                'log10(pvalue)': float(row['log10(pvalue)']),
+                'fold_enrichment': float(row['fold_enrichment']),
+                'log10(qvalue)': float(row['log10(qvalue)']),
+                'name': row['name']
+            })
+    
+    return peaks
+
+macs3_file1 = 'macs-name_B1.txt'
+macs3_file2 = 'macs-name_B2.txt'
+macs3_file3 = 'macs-name_B3.txt'
+
+output_file = 'macs_overlap_BR_treatment.txt'
+
+overlapping_peaks = find_overlapping_peaks(macs3_file1, macs3_file2, macs3_file3)
+
+print("Overlapping Peaks:")
+for peak in overlapping_peaks:
+    print(peak)
+
+with open(output_file, 'w') as f:
+    for peak in overlapping_peaks:
+        f.write(f"{peak['chromosome']}\t{peak['start']}\t{peak['end']}\t{peak['length1']}\t{peak['length2']}\t{peak['length3']}\t{peak['pileup1']}\t{peak['pileup2']}\t{peak['pileup3']}\t{peak['log10(pvalue)1']}\t{peak['log10(pvalue)2']}\t{peak['log10(pvalue)3']}\t{peak['fold_enrichment1']}\t{peak['fold_enrichment2']}\t{peak['fold_enrichment3']}\t{peak['log10(qvalue)1']}\t{peak['log10(qvalue)2']}\t{peak['log10(qvalue)3']}\t{peak['name1']}\t{peak['name2']}{peak['name3']}\n")
+print("Results have been written to", output_file)
+
+
+#To determine regions of enrichment which are exclusive to treatment condition relative to the control condition - python script
+
+#non_overlap regions in relation to p value and start and end regions: 
+import csv
+
+def find_non_overlapping_peaks(macs3_file1, macs3_file2, fold_enrichment_threshold):
+    peaks1 = read_macs3_peaks(macs3_file1)
+    peaks2 = read_macs3_peaks(macs3_file2)
+    
+    non_overlapping_peaks = []
+    non_overlapping_count = 0
+    
+    for peak1 in peaks1:
+        is_overlapping = False
+        
+        for peak2 in peaks2:
+            if peak1['chromosome'] == peak2['chromosome']:
+                if peak1['end'] >= peak2['start'] and peak1['start'] <= peak2['end']:
+                    is_overlapping = True
+                    fold_enrichment_ratio = peak1['av_fold_enrichment']/peak2['av_fold_enrichment']
+                    if fold_enrichment_ratio > fold_enrichment_threshold:
+                        break
+        
+        if not is_overlapping or fold_enrichment_ratio > fold_enrichment_threshold:
+            non_overlapping_peaks.append(peak1)
+            non_overlapping_count += 1
+    
+    return non_overlapping_peaks, non_overlapping_count
+
+
+def read_macs3_peaks(macs3_file):
+    peaks = []
+    
+    with open(macs3_file, 'r') as file:
+        reader = csv.DictReader(file, delimiter='\t')
+        for row in reader:
+            peaks.append({
+                'chromosome': row['chr'],
+                'start': int(row['start']),
+                'end': int(row['end']),
+                'av_fold_enrichment': float(row['av_fold_enrichment']),
+                'length1': int(row['length1']),
+                'length2': int(row['length2']),
+                'length3': int(row['length3']),
+                'pileup1': float(row['pileup1']),
+                'pileup2': float(row['pileup2']),
+                'pileup3': float(row['pileup3']),
+                'log10(pvalue)1': float(row['log10(pvalue)1']),
+                'log10(pvalue)2': float(row['log10(pvalue)2']),
+                'log10(pvalue)3': float(row['log10(pvalue)3']),
+                'fold_enrichment1': float(row['fold_enrichment1']),
+                'fold_enrichment2': float(row['fold_enrichment2']),
+                'fold_enrichment3': float(row['fold_enrichment3']),
+                'log10(qvalue)1': float(row['log10(qvalue)1']),
+                'log10(qvalue)2': float(row['log10(qvalue)2']),
+                'log10(qvalue)3': float(row['log10(qvalue)3']),
+                'name1': row['name1'],
+                'name2_3': row['name2_3']
+            })
+            
+    return peaks
+
+
+macs3_file1 = 'macs_overlap_BR_treatment.txt'
+macs3_file2 = 'macs_overlap_BR_control.txt'
+output_file = 'macs_non-overlap_treatmentvcontrol.txt'
+fold_enrichment_threshold = 2
+
+non_overlapping_peaks, non_overlapping_count = find_non_overlapping_peaks(macs3_file1, macs3_file2, fold_enrichment_threshold)
+
+print("Non-Overlapping Peaks from macs3_file1:")
+for peak in non_overlapping_peaks:
+    print(peak)
+
+print("Number of Non-Overlapping Peaks:", non_overlapping_count)
+
+with open(output_file, 'w') as f:
+    for peak in non_overlapping_peaks:
+        f.write(f"{peak['chromosome']}\t{peak['start']}\t{peak['end']}\t{peak['av_fold_enrichment']}\t{peak['length1']}\t{peak['length2']}\t{peak['length3']}\t{peak['pileup1']}\t{peak['pileup2']}\t{peak['pileup3']}\t{peak['log10(pvalue)1']}\t{peak['log10(pvalue)2']}\t{peak['log10(pvalue)3']}\t{peak['fold_enrichment1']}\t{peak['fold_enrichment2']}\t{peak['fold_enrichment3']}\t{peak['log10(qvalue)1']}\t{peak['log10(qvalue)2']}\t{peak['log10(qvalue)3']}\t{peak['name1']}\t{peak['name2_3']}\n")
+print("Results have been written to", output_file)
+
+
+
+
+#to determine the genes to which the non-overlapping immunogenic regions map too - python script
+
+#mapping macs3 non_overlapping chagas result to gff clbrenner t cruzi genome: 
+
+#first step is to create a data base with the gff file using a special python package: 
+import gffutils
+db = gffutils.create_db('genome.gff', 'database_genome.gff')
+#to attach the new existing database: 
+db = gffutils.FeatureDB('database_genome.gff') #to work in this database now you just call this file 
+
+#now to map the macs3 result we will use a function from the gffutils package: 
+import csv #create a csv final output 
+import gffutils
+
+def map_macs_to_gff(macs_file, gff_db, output_file):
+    mapped_genes = [] #creating empty list able to store the new mapped genes info 
+
+    db = gffutils.FeatureDB(gff_db) #connecting to and accessing the contents of the GFF database file 
+
+    with open(macs_file, 'r') as macs, open(output_file, 'w', newline='') as output:
+        macs_reader = csv.DictReader(macs, delimiter='\t') #read the columns 
+        writer = csv.writer(output) #write the output in the csv file 
+
+        writer.writerow(['MACS Chromosome', 'MACS Start', 'MACS End', 'Gene ID', 'Gene Name', 'Description']) #the name of the future columns in the csv file
+
+        for macs_entry in macs_reader: #read the columns inside the macs result file 
+            chromosome = macs_entry['chr']
+            start = int(macs_entry['start'])
+            end = int(macs_entry['end'])
+
+            query = db.region(seqid=chromosome, start=start, end=end, featuretype='gene') #retrive the information from the database to do the mapping
+            for gene in query:  #query is searching the GFF database (db) for genes located within the specified region on the specified chromosome and then results of the query will be stored in the query variable for easier access and manipulation
+                mapped_genes.append({
+                    'MACS Chromosome': chromosome,
+                    'MACS Start': start,
+                    'MACS End': end,
+                    'Gene ID': gene.id, #This allows access to retrieve the id value (in the dictionary) of a gene using the key 'Gene ID'
+                    'Gene Name': gene.attributes['Name'][0] if 'Name' in gene.attributes else '', #This assigns a value to the key 'Gene Name' in the dictionary, if the name exists it will be added to the list by assigning a value and if does not exist it will assign an empty string as the value for the key in the dictionary
+                    'Description': gene.attributes['description'][0] if 'description' in gene.attributes else '' #This assigns a value to the key 'Description' in the dictionary, if the description exists it will be added to the list by assigning a value and if does not exist it will assign an empty string as the value for the key in the dictionary
+                })
+                writer.writerow([chromosome, start, end, gene.id, gene.attributes.get('Name', [''])[0], gene.attributes.get('description', [''])[0]]) #writes the values assigned to the dictionary keys 
+
+    return mapped_genes #which we previously created to store the list of results 
+
+#define the file names by assigning it to the proper file:   
+macs_file = 'macs_non-overlap_treatmentvcontrol.txt'
+gff_db = 'database_genome.gff'
+output_file = 'macs_non-overlap_treatmentvcontrol_mapped.csv'
+
+mapped_genes = map_macs_to_gff(macs_file, gff_db, output_file) #Calls the function map_macs_to_gff and all the result of this function call to be assigned to the variable mapped_genes
+
+if mapped_genes: #mapped_genes will be print if these are associated to a non-empty value
+    print("Mapped Genes:")
+    for gene in mapped_genes:
+        print(f"MACS Chromosome: {gene['MACS Chromosome']}")
+        print(f"MACS Start: {gene['MACS Start']}")
+        print(f"MACS End: {gene['MACS End']}")
+        print(f"Gene ID: {gene['Gene ID']}")
+        print(f"Gene Name: {gene['Gene Name']}")
+        print(f"Description: {gene['Description']}")
+        print() #print an empty line to separate the results visually from one gene to another 
+else: #in case mapped_genes are associated with empty values 
+    print("No genes found in the GFF database matching the MACS entries.") #this will only be executed if the condition in the previous part ("if") is not satisfied 
+
+print("Mapped genes have been written to", output_file)
+
+
+
+
+
+#analyzing immunogenic genes:
+#featureCounts 
+#map reads to annotated GeneIDs
+
+
+module load nixpkgs/16.09
+module load gcc/7.3.0
+module load StdEnv/2020
+module load subread/2.0.3
+
+featureCounts -LMO -a /path/to/genome.gtf \
+-o "fc_output.txt" -F "GTF" -g "gene_id" -s 0 -O -T 8 *sorted.bam
+
+
+
+#edgeR analysis of featureCounts outputs
+#analysis done in RStudio
+
+library("edgeR")
+library("limma")
+library("dplyr")
+library("ggplot2")
+library("data.table")
+ 
+
+GeneID = fc_output$Geneid 
+
+counts.df = fc_output  %>%  
+  select(libB1_sorted.bam,  
+         libB2_sorted.bam,  
+         libB3_sorted.bam,
+         B1_ChD._sorted.bam,  
+         B1_ChD._sorted.bam.1,  
+         B2_ChD._sorted.bam,
+	 B2_ChD._sorted.bam.1,   
+         B3_ChD._sorted.bam,  
+         B3_ChD._sorted.bam.1) 
+
+colnames(counts.df)=c(  
+  "LibB1",  
+  "LibB2",  
+  "LibB3",
+  "B1_ChD+",  
+  "B1_ChD-",  
+  "B2_ChD+",  
+  "B2_ChD-",  
+  "B3_ChD+",  
+  "B3_ChD-") 
+
+rownames(counts.df)=GeneID 
+
+#Converting into a matrix so we can use it as data into a DGEList 
+
+counts <- as.matrix(counts.df) 
+
+
+#Creating the DGEList. In my case I don't have biological replicates, but all this section 
+#can change and the statistical analysis also when there are biological replicates 
+#y <- DGEList (counts=counts) 
+
+group <-factor(c(1,1,1,2,3,2,3,2,3)) 
+y <- DGEList(counts=counts, group=group) 
+design <- model.matrix(~group) 
+
+# filter out lowly expressed genes 
+
+keep <- rowSums(cpm(y)>1) >= 2 
+y <- y[keep, , keep.lib.sizes=FALSE] 
+
+
+#Lib normalization 
+
+y <- calcNormFactors(y) 
+y 
+
+#estimating common dispersion 
+
+y <- estimateDisp(y, design) 
+y$common.dispersion 
+
+#Now the first coefficient will measure the baseline logCPM expression level in the first treatment condition (here group A), and the second and third columns are relative to the baseline.
+#Here the second and third coefficients represent B vs A and C vs A respectively. 
+fit <- glmQLFit(y, design)
+
+cvl_qlf <- glmQLFTest(fit, coef=2)
+hvl_qlf <- glmQLFTest(fit, coef=3)
+
+comp_et_cvl <-cvl_qlf$table%>%
+  filter(logFC >= 0)
+
+comp_et_hvl <-hvl_qlf$table%>%
+  filter(logFC >= 0)
+
+cvl_c <-cvl_qlf$table %>%   
+  filter(PValue <= 0.05)%>%
+  filter(logFC >= 1)
+
+cvl_h <-hvl_qlf$table %>%   
+  filter(PValue <= 0.05)%>%
+  filter(logFC >= 1)
+
+#calculate the number of statistically significantly enriched genes.
+cvl_ss <-cvl_qlf$table %>%   
+  filter(PValue <= 0.05)%>%
+  filter(logFC >= 1) 
+
+hvl_ss <-hvl_qlf$table %>%   
+  filter(PValue <= 0.05)%>%
+  filter(logFC >= 1)
+
+#creation of volcano plot
+
+pvalue_threshold <- 0.05
+logFC_threshold <- 1
+
+comp_et_cvl$significant <- ifelse (comp_et_cvl$PValue < pvalue_threshold & abs(comp_et_cvl$logFC) > logFC_threshold, "Yes", "No")
+comp_et_hvl$significant <- ifelse (comp_et_hvl$PValue < pvalue_threshold & abs(comp_et_hvl$logFC) > logFC_threshold, "Yes", "No")
+
+cvl <- ggplot(comp_et_cvl, aes(x = logFC, y = -log10(PValue), color = significant)) +
+  theme_classic() +
+  geom_point(size = 1.5) +
+  scale_color_manual(values = c("No" = "grey", "Yes" = "#FF0033")) +  # Set colors for non-significant and significant points
+  geom_vline(xintercept=c(1), col="black", linetype ="f8") +  
+  geom_hline(yintercept=-log10(0.05), col="black", linetype ="f8") + 
+  labs(
+    title = "Volcano Plot",
+    x = "logFC",
+    y = "-log10(P-value)"
+  )
+
+cvl
+
+
+
+hvl <- ggplot(comp_et_hvl, aes(x = logFC, y = -log10(PValue), color = significant)) +
+  theme_classic() +
+  geom_point(size = 1.5) +
+  scale_color_manual(values = c("No" = "grey", "Yes" = "#0033CC")) +  # Set colors for non-significant and significant points
+  geom_vline(xintercept=c(1), col="black", linetype ="f8") +  
+  geom_hline(yintercept=-log10(0.05), col="black", linetype ="f8") + 
+  labs(
+    title = "Volcano Plot",
+    x = "logFC",
+    y = "-log10(P-value)"
+  )
+
+hvl
+
+#comparing chagas and healthy (non-chagas patients)
+
+#comparing Chagas and healthy significantly enriched genes.
+#1. make a new design where the CH- (healthy) is considered the baseline (1), in comparision to CH+ (chagas), which is considered "2"
+#can change and the statistical analysis also when there are biological replicates 
+
+group2 <-factor(c(3,3,3,2,1,2,1,2,1)) 
+y2 <- DGEList(counts=counts, group=group2) 
+design2 <- model.matrix(~group2) 
+keep2 <- rowSums(cpm(y2)>1) >= 2 
+y2 <- y2[keep2, , keep.lib.sizes=FALSE] 
+y2 <- calcNormFactors(y2) 
+y2 
+y2 <- estimateDisp(y2, design2) 
+y2$common.dispersion 
+bcv <- 0.169683
+
+
+#Now the first coefficient will measure the baseline logCPM expression level in the first treatment condition (here group A), and the second and third columns are relative to the baseline.
+#Here the second and third coefficients represent B vs A and C vs A respectively. 
+fit2 <- glmQLFit(y2, design2)
+
+cvh_qlf <- glmQLFTest(fit2, coef=2)
+
+comp_et_cvh <-cvh_qlf$table
+
+#2. filter this table by GeneIDs that are statistically significant in either Chagas or healthy enrichments
+
+cvl_rownames <-row.names(cvl_ss)
+cvl_rownames.df <-(data.frame(cvl_rownames))
+colnames(cvl_rownames.df)=c(  
+  "GeneID")
+
+hvl_rownames <-row.names(hvl_ss)
+hvl_rownames.df <-(data.frame(hvl_rownames))
+colnames(hvl_rownames.df)=c(  
+  "GeneID")
+
+cvh_rownames <- full_join(cvl_rownames.df, hvl_rownames.df, by="GeneID")
+
+library("tibble")
+
+cvh_geneID <- rownames_to_column(comp_et_cvh, var = "GeneID")
+
+cvh_filter <- merge(cvh_rownames,cvh_geneID, by = "GeneID")
+write.csv(cvh_filter, file="edgeR_glm_sylvio_statsig_cvh.csv")
+
+#3. plot on a volcano plot
+cvh_filter$significant <- ifelse (cvh_filter$PValue < pvalue_threshold & abs(cvh_filter$logFC) > logFC_threshold, "Yes", "No")
+
+cvh <-ggplot(cvh_filter, aes(x = logFC, y = -log10(PValue), color = significant)) +
+  theme_classic() +
+  geom_point(size = 1.5) +
+  scale_color_manual(values = c("No" = "grey", "Yes" = "#009933")) +  # Set colors for non-significant and significant points
+  geom_vline(xintercept=c(1), col="black", linetype ="f8") +  
+  geom_vline(xintercept=c(-1), col="black", linetype ="f8") +  
+  geom_hline(yintercept=-log10(0.05), col="black", linetype ="f8") + 
+  labs(
+    title = "Volcano Plot",
+    x = "logFC",
+    y = "-log10(P-value)"
+  )
+
+cvh
+
+#analysis of the chagas and healthy comparison to determine the number of chagas enriched/ healthy enriched
+
+cvh_c <-cvh_filter %>%   
+  filter(PValue <= 0.05)%>%
+  filter(logFC >= 1)
+
+cvh_h <-cvh_filter %>%   
+  filter(PValue <= 0.05)%>%
+  filter(logFC <= -1)
+
+cvh_ns <-cvh_filter %>%   
+  filter(PValue > 0.05) %>%
+  filter(logFC < 1) %>%
+  filter(logFC > -1)
+
+
+# plot MDS (multidemintional scaling) graph, it will show how the different samples correlate to each other, their similarities and differences
+# Note, you can change the colour of the graphs etc
+col <- as.numeric(group)
+
+plotMDS.pdf <-plotMDS(y, pch = 17, cex = 2, method = "logFC", col=col) 
+
+
+
+
